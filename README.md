@@ -79,6 +79,7 @@ NEXT_PUBLIC_API_URL=http://localhost:3000
 ```bash
 pnpm install
 pnpm db:generate
+pnpm db:seed
 pnpm db:migrate
 pnpm dev
 ```
