@@ -25,7 +25,7 @@ Spaces Companion is a powerful platform that enables users to download spaces fr
 - ✅ **UI Components**: shadcn/ui
 - ✅ **Payments**: Stripe Integration
 - ✅ **Runtime**: Node.js with Express
-- ✅ **Web Scraping**: Puppeteer
+- ✅ **Automation**: Puppeteer
 - ✅ **Transcription**: Groq (Whisper)
 
 ## 🚀 Getting Started
