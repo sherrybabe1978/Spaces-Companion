@@ -1,0 +1,1 @@
+ALTER TABLE "transcriptions" ADD COLUMN "file_name" varchar(255);
