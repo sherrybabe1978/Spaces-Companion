@@ -46,7 +46,7 @@ PORT=3000
 DATABASE_URL=
 FRONTEND_URL=http://localhost:3001
 ```
-
+> **Note**: You will need ffmpeg added to your environment variables [https://www.ffmpeg.org/download.html].
 > **Note**: It's recommended to create a new X account without two-factor authentication for the bot.
 
 3. Install dependencies and start the server:
