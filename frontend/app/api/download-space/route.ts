@@ -4,7 +4,7 @@ import { spaces, users, teamMembers } from '@/lib/db/schema';
 import { getUser } from '@/lib/db/queries';
 import { eq, and } from 'drizzle-orm';
 
-const API_URL = 'http://localhost:3000'; // Your external API URL
+const API_URL = 'https://f6dxv4xl-3000.usw2.devtunnels.ms'; // Your external API URL
 
 const PLAN_LIMITS = {
   free: 1,
