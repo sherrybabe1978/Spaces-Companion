@@ -4,7 +4,7 @@ import { spaces, users, teamMembers } from '@/lib/db/schema';
 import { getUser } from '@/lib/db/queries';
 import { eq, and } from 'drizzle-orm';
 
-const API_URL = 'http://localhost:3000'; // Your external API URL
+const API_URL = 'https://d277ae48074b.ngrok.app'; // Your external API URL
 
 const PLAN_LIMITS = {
   free: 1,
