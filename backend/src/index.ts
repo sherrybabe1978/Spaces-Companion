@@ -218,52 +218,46 @@ export class Downloader extends EventEmitter implements DownloaderInterface {
       await Promise.race([
         print.info('Filling out username...'),
     
-(async () => {
-  try {
-      // Fill out username
-      await page.locator('input[name="text"]').fill(this.username);
-      await page.locator('::-p-text(Next)').click();
+        // Fill out the username
+        await page.locator('input[name="text"]').fill(this.username),
+    
+        // Click the Next button after filling out the username
+        print.info('Clicking the Next button...'),
+        await page.locator('::-p-text(Next)').click(),
+    
+        // Short delay to ensure page transition
+    
+        // Check if the phone number input appears on the page
+        (async () => {
+  // Check if phone number verification is required
+  const phoneNumberText = await page.evaluate(() => {
+    const content = document.body.textContent?.toLowerCase() || '';
+    return content.includes('phone number');
+});
 
+if (phoneNumberText) {
+    print.info('Phone number verification detected...');
+    
+    // Fill in phone number
+    await page.locator('input[name="text"]').fill(this.phoneNumber);
+    print.info('Entered phone number');
 
-      // Check if phone number verification is required
-      const phoneNumberText = await page.evaluate(() => {
-          const content = document.body.textContent?.toLowerCase() || '';
-          return content.includes('phone');
-      });
+    // Click Next
+    await page.locator('::-p-text(Next)').click();
+    print.info('Clicked Next after phone number');
+    
 
-      if (phoneNumberText) {
-          print.info('Phone number verification detected...');
-          
-          // Fill in phone number
-          await page.locator('input[name="text"]').fill(this.phoneNumber);
-          print.info('Entered phone number');
+}
 
-          // Click Next
-          await page.locator('::-p-text(Next)').click();
-          print.info('Clicked Next after phone number');
-          
-
-      }
-
-
-      
-      // Fill password
-      await page.locator('input[name="password"]').fill(this.password);
-      print.info('Entered password');
-
-      // Click Log in
-      await page.locator('::-p-text(Log in)').click();
-      print.info('Clicked Log in button');
-
-      // Wait for navigation to complete
-      await page.waitForNavigation({ waitUntil: 'networkidle0' });
-
-  } catch (error: any) {
-      print.error(`Login error: ${error.message}`);
-      throw error;
-  }
-})(),
-
+    
+            // Continue to filling the password after handling phone number (if required)
+            print.info('Filling out password...');
+            await page.locator('input[name="password"]').fill(this.password);
+    
+            // Click "Log In"
+            print.info('Clicking the Log In button...');
+            await page.locator('::-p-text(Log in)').click();
+        })(),
     
         // Wait for navigation to finish
         await page.waitForNavigation({ waitUntil: "load" }),

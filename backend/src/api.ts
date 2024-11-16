@@ -1,15 +1,16 @@
-import express, { Request, Response } from 'express';
-import bodyParser from 'body-parser';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { Downloader } from './index.js';
 import { DownloaderOptions } from './types.js';
 import dotenv from 'dotenv';
+import { Storage } from '@google-cloud/storage';
 import path from 'path';
-import fs from 'fs';
+import fs from 'fs-extra';
 import pkg from 'pg';
 import cluster from 'cluster';
 import os from 'os';
 import rateLimit from 'express-rate-limit';
+
 const { Pool } = pkg;
 
 dotenv.config();
@@ -44,7 +45,7 @@ if (cluster.isPrimary) {
 
   // Add request timeout
   app.use((req, res, next) => {
-    req.setTimeout(300000); // 5 minutes timeout
+    req.setTimeout(900000); // 15 minutes timeout
     next();
   });
 
@@ -58,6 +59,9 @@ if (cluster.isPrimary) {
   // Ensure all required environment variables are defined
   const requiredEnvVars = [
     'DATABASE_URL',
+    'GCP_PROJECT_ID',
+    'GCP_BUCKET_NAME',
+    'GCP_KEY_FILENAME',
     'TWITTER_USERNAME',
     'TWITTER_PASSWORD',
     'OUTPUT_PATH'
@@ -76,9 +80,36 @@ if (cluster.isPrimary) {
       rejectUnauthorized: false
     },
     max: 20, // maximum number of clients in the pool
-    idleTimeoutMillis: 30000,
+    idleTimeoutMillis: 90000,
     connectionTimeoutMillis: 2000,
   });
+
+  // Initialize Google Cloud Storage
+  const storage = new Storage({
+    projectId: process.env.GCP_PROJECT_ID,
+    keyFilename: path.join(process.cwd(), process.env.GCP_KEY_FILENAME || ''),
+  });
+  const bucket = storage.bucket(process.env.GCP_BUCKET_NAME || '');
+
+  // Helper function to clean up downloads
+  async function cleanupDownload(workingDir: string, outputPath: string, task: Downloader) {
+    try {
+      // Delete the working directory and all its contents
+      await fs.remove(workingDir);
+      console.log(`Deleted working directory: ${workingDir}`);
+
+      // Delete the output file if it exists
+      if (await fs.pathExists(outputPath)) {
+        await fs.remove(outputPath);
+        console.log(`Deleted output file: ${outputPath}`);
+      }
+
+      // Run any additional cleanup tasks
+      await task.cleanup();
+    } catch (error) {
+      console.error('Error during cleanup:', error);
+    }
+  }
 
   app.post('/download-space', async (req: any, res: any) => {
     const { spaceId, spaceDbId } = req.body;
@@ -97,11 +128,13 @@ if (cluster.isPrimary) {
       output: workingDir,
     };
 
+    let task: Downloader | undefined;
+
     try {
       // Add request to active downloads tracking
       activeDownloads.set(spaceDbId, { status: 'processing', progress: 0 });
 
-      const task = await new Downloader(options).init();
+      task = await new Downloader(options).init();
 
       // Set up progress tracking
       task.on('progress', async (progress: number) => {
@@ -121,29 +154,37 @@ if (cluster.isPrimary) {
       await task.generateAudio();
       const outputPath = task.getOutputPath();
 
-      // Move the file to the downloads folder
-      const downloadsFolderPath = path.join(process.env.OUTPUT_PATH || './downloads');
-      const finalFilePath = path.join(downloadsFolderPath, path.basename(outputPath));
-      await fs.promises.rename(outputPath, finalFilePath);
+      // Upload file to Google Cloud Storage
+      const gcsFileName = `spaces/${spaceId}/${path.basename(outputPath)}`;
+      await bucket.upload(outputPath, {
+        destination: gcsFileName,
+        metadata: {
+          cacheControl: 'public, max-age=31536000',
+        },
+        resumable: false // Faster for files under 5MB
+      });
+
+      // Get the public URL
+      const publicUrl = `https://storage.googleapis.com/${process.env.GCP_BUCKET_NAME}/${gcsFileName}`;
 
       // Update the database
       await pool.query(
         'UPDATE spaces SET file_name = $1, download_url = $2, status = $3 WHERE id = $4',
         [
-          path.basename(finalFilePath),
-          finalFilePath,
+          path.basename(outputPath),
+          publicUrl,
           'completed',
           spaceDbId
         ]
       );
 
       // Cleanup
-      await task.cleanup();
+      await cleanupDownload(workingDir, outputPath, task);
       activeDownloads.delete(spaceDbId);
 
-      res.json({ 
-        message: 'Space downloaded and saved successfully', 
-        filePath: finalFilePath,
+      return res.json({ 
+        message: 'Space downloaded, uploaded successfully, and all temporary files deleted', 
+        publicUrl,
         spaceId,
         spaceDbId 
       });
@@ -157,7 +198,16 @@ if (cluster.isPrimary) {
         ['failed', error.message || 'Unknown error', spaceDbId]
       );
 
-      res.status(500).json({ 
+      // Attempt to clean up even if an error occurred
+      if (task) {
+        try {
+          await cleanupDownload(workingDir, task.getOutputPath(), task);
+        } catch (cleanupError) {
+          console.error('Error during cleanup after failure:', cleanupError);
+        }
+      }
+
+      return res.status(500).json({ 
         error: 'Failed to download space',
         message: error.message,
         spaceId,
@@ -176,74 +226,20 @@ if (cluster.isPrimary) {
     }
   });
 
-  app.get('/downloads/:filename', (req: any, res: any) => {
-    try {
-      const filename = req.params.filename;
-      const filePath = path.join(process.env.OUTPUT_PATH || './downloads', filename);
-  
-      // Check if file exists
-      if (!fs.existsSync(filePath)) {
-        console.log('File not found:', filePath);
-        return res.status(404).json({ error: 'File not found' });
-      }
-  
-      // Set appropriate headers
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  
-      // Stream the file
-      const fileStream = fs.createReadStream(filePath);
-      fileStream.pipe(res);
-  
-      // Handle errors
-      fileStream.on('error', (error) => {
-        console.error('Error streaming file:', error);
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Error streaming file' });
-        }
-      });
-    } catch (error) {
-      console.error('Error handling download:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Internal server error' });
-      }
-    }
+  // Add endpoint to check download status
+  app.get('/download-status/:spaceDbId', (req: Request, res: Response) => {
+    const { spaceDbId } = req.params;
+    const downloadStatus = activeDownloads.get(parseInt(spaceDbId));
+    res.json(downloadStatus || { status: 'not found' });
   });
-  
-  // Also serve static files from the downloads directory
-  app.use('/downloads', express.static(path.join(process.cwd(), 'downloads')));
 
   // Health check endpoint
   app.get('/health', (req: Request, res: Response) => {
     res.json({ status: 'healthy', worker: process.pid });
   });
 
-  app.get('/api/download-space/:filename', (req: any, res: any) => {
-    const filename = req.params.filename;
-    const filePath = path.join(process.env.OUTPUT_PATH || './downloads', filename);
-  
-    // Check if file exists
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-  
-    // Set appropriate headers
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  
-    // Stream the file
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.pipe(res);
-  
-    // Handle errors
-    fileStream.on('error', (error) => {
-      console.error('Error streaming file:', error);
-      res.status(500).json({ error: 'Error streaming file' });
-    });
-  });
-
   // Error handling middleware
-  app.use((err: Error, req: Request, res: Response, next: Function) => {
+  app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('Unhandled error:', err);
     res.status(500).json({ 
       error: 'Internal server error', 
@@ -254,16 +250,6 @@ if (cluster.isPrimary) {
   app.listen(port, () => {
     console.log(`Worker ${process.pid} running on port ${port}`);
   });
-
-  app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3001', // Your Next.js app URL
-    methods: ['GET', 'POST', 'DELETE'],
-    credentials: true
-  }));
-  
-  
-  
-    
 
   // Graceful shutdown
   process.on('SIGTERM', async () => {

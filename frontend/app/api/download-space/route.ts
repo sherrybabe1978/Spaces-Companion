@@ -40,11 +40,7 @@ export async function POST(request: NextRequest) {
       .where(eq(users.id, user.id))
       .limit(1);
 
-    const planLimit = PLAN_LIMITS[userPlan.plan as keyof typeof PLAN_LIMITS];
 
-    if (userPlan.storedSpaces >= planLimit) {
-      return NextResponse.json({ error: 'Plan limit reached. Please upgrade or delete existing spaces.' }, { status: 403 });
-    }
 
     const [newSpace] = await db.insert(spaces).values({
       spaceId,

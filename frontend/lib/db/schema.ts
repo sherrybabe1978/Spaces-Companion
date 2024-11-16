@@ -184,11 +184,9 @@ export enum PlanType {
 
 export const transcriptions = pgTable('transcriptions', {
   id: serial('id').primaryKey(),
-  userId: integer('user_id').references(() => users.id),
   spaceId: integer('space_id').references(() => spaces.id),
-  fileName: varchar('file_name', { length: 255 }),
   content: text('content'),
-  segments: text('segments'),
+  segments: text('segments'), // Add this line
   status: varchar('status', { length: 50 }).notNull().default('pending'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),

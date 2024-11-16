@@ -271,7 +271,7 @@ export default function DownloadSpacePage() {
         <CardFooter>
           <Button 
             onClick={handleDownload} 
-            disabled={isLoading || !spaceId}
+            disabled={isLoading || !spaceId || (userPlan && userPlan.storedSpaces >= userPlan.limit)}
           >
             {isLoading ? (
               <>
@@ -288,6 +288,17 @@ export default function DownloadSpacePage() {
         </CardFooter>
       </Card>
 
+      {userPlan && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle>Your Plan</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p>Current Plan: {userPlan.plan}</p>
+            <p>Stored Spaces: {userPlan.storedSpaces} / {userPlan.limit}</p>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {spaces.map((space) => (

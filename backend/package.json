@@ -27,6 +27,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.13.0",
     "@types/cheerio": "^0.22.35",
     "@types/pg": "^8.11.10",
     "axios": "^1.7.2",

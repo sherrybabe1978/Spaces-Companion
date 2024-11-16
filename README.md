@@ -45,6 +45,9 @@ OUTPUT_PATH=./downloads
 PORT=3000
 DATABASE_URL=
 FRONTEND_URL=http://localhost:3001
+GCP_PROJECT_ID=
+GCP_BUCKET_NAME=
+GCP_KEY_FILENAME=service-account-key.json
 ```
 > **Note**: You will need ffmpeg added to your environment variables [https://www.ffmpeg.org/download.html].
 > **Note**: It's recommended to create a new X account without two-factor authentication for the bot.
@@ -56,6 +59,13 @@ npm build
 npm link
 npm start
 ```
+
+4. Alternatively you can use docker:
+```bash
+docker build -t spaces-downloader .
+docker run -p 3000:3000 spaces-downloader
+```
+
 
 ### Frontend Setup
 
@@ -73,6 +83,9 @@ BASE_URL=http://localhost:3001
 AUTH_SECRET=
 GROQ_API_KEY=
 NEXT_PUBLIC_API_URL=http://localhost:3000
+GCP_PROJECT_ID=
+GCP_BUCKET_NAME=
+GCP_KEY_FILENAME=service-account-key.json
 ```
 
 3. Install dependencies and start the development server:

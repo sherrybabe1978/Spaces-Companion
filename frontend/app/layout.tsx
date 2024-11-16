@@ -5,8 +5,8 @@ import { UserProvider } from '@/lib/auth';
 import { getUser } from '@/lib/db/queries';
 
 export const metadata: Metadata = {
-  title: 'Spaces Companion',
-  description: 'Easily download and transcribe X Spaces audio.',
+  title: 'Next.js SaaS Starter',
+  description: 'Get started quickly with Next.js, Postgres, and Stripe.',
 };
 
 export const viewport: Viewport = {

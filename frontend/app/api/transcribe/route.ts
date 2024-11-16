@@ -1,3 +1,4 @@
+// app/api/transcribe/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db/drizzle';
 import { transcriptions, spaces } from '@/lib/db/schema';
@@ -7,9 +8,15 @@ import Groq from 'groq-sdk';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { Storage } from '@google-cloud/storage';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
+});
+
+const storage = new Storage({
+  projectId: process.env.GCP_PROJECT_ID,
+  keyFilename: path.join(process.cwd(), process.env.GCP_KEY_FILENAME || ''),
 });
 
 const MAX_CHUNK_SIZE = 20 * 1024 * 1024; // 20MB in bytes
@@ -42,7 +49,7 @@ async function processChunk(
   chunk: Buffer,
   chunkIndex: number,
   totalChunks: number,
-  transcriptionId: number,
+  spaceId: number,
   previousSegmentEnd: number = 0
 ): Promise<ProcessedTranscriptionResponse> {
   const tempDir = os.tmpdir();
@@ -53,7 +60,7 @@ async function processChunk(
 
     const transcription = await groq.audio.transcriptions.create({
       file: fs.createReadStream(tempFilePath),
-      model: "whisper-large-v3-turbo",
+      model: "distil-whisper-large-v3-en",
       response_format: "verbose_json",
     }) as GroqTranscriptionResponse;
 
@@ -65,6 +72,33 @@ async function processChunk(
       end: segment.end + previousSegmentEnd,
       seek: segment.seek + (chunkIndex * chunk.length),
     }));
+
+    if (chunkIndex === 0) {
+      await db.insert(transcriptions).values({
+        spaceId: spaceId,
+        content: transcription.text,
+        segments: JSON.stringify(adjustedSegments),
+        status: totalChunks === 1 ? 'completed' : 'in_progress',
+      });
+    } else {
+      const [existingTranscription] = await db.select()
+        .from(transcriptions)
+        .where(eq(transcriptions.spaceId, spaceId))
+        .limit(1);
+
+      if (existingTranscription) {
+        const existingSegments = JSON.parse(existingTranscription.segments || '[]');
+        
+        await db.update(transcriptions)
+          .set({
+            content: existingTranscription.content + ' ' + transcription.text,
+            segments: JSON.stringify([...existingSegments, ...adjustedSegments]),
+            status: chunkIndex === totalChunks - 1 ? 'completed' : 'in_progress',
+            updatedAt: new Date(),
+          })
+          .where(eq(transcriptions.id, existingTranscription.id));
+      }
+    }
 
     return {
       text: transcription.text,
@@ -84,28 +118,29 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const formData = await request.formData();
-    const file = formData.get('file') as File;
-    const fileName = formData.get('fileName') as string;
-    const spaceId = formData.get('spaceId') as string | null;
+    const { spaceId } = await request.json();
 
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+    if (!spaceId) {
+      return NextResponse.json({ error: 'Space ID is required' }, { status: 400 });
     }
 
-    // Create initial transcription record
-    const [newTranscription] = await db.insert(transcriptions)
-      .values({
-        userId: user.id,
-        fileName: fileName || file.name,
-        status: 'processing',
-        content: '',
-        segments: '[]',
-        spaceId: spaceId ? parseInt(spaceId) : null,
-      })
-      .returning();
+    // Fetch the space details
+    const [space] = await db.select()
+      .from(spaces)
+      .where(eq(spaces.id, spaceId))
+      .limit(1);
 
-    const buffer = Buffer.from(await file.arrayBuffer());
+    if (!space || !space.downloadUrl) {
+      return NextResponse.json({ error: 'Space not found or no download URL available' }, { status: 404 });
+    }
+
+    // Download the file from Google Cloud Storage
+    const bucket = storage.bucket(process.env.GCP_BUCKET_NAME || '');
+    const fileName = space.downloadUrl.split('/').slice(-3).join('/');
+    const file = bucket.file(fileName);
+
+    const [fileContents] = await file.download();
+    const buffer = Buffer.from(fileContents);
     const totalSize = buffer.length;
     const chunks: Buffer[] = [];
 
@@ -124,13 +159,14 @@ export async function POST(request: NextRequest) {
         chunks[i],
         i,
         chunks.length,
-        newTranscription.id,
+        space.id,
         lastSegmentEnd
       );
       
       completeText += (i > 0 ? ' ' : '') + text;
       allSegments = [...allSegments, ...segments];
       
+      // Update lastSegmentEnd to the end time of the last segment in this chunk
       if (segments.length > 0) {
         lastSegmentEnd = segments[segments.length - 1].end;
       }
@@ -138,24 +174,32 @@ export async function POST(request: NextRequest) {
       progress = Math.round(((i + 1) / chunks.length) * 100);
 
       // Update progress in database
-      await db.update(transcriptions)
-        .set({
-          status: `processing:${progress}`,
-          content: completeText,
-          segments: JSON.stringify(allSegments),
-          updatedAt: new Date(),
-        })
-        .where(eq(transcriptions.id, newTranscription.id));
+      const [existingTranscription] = await db.select()
+        .from(transcriptions)
+        .where(eq(transcriptions.spaceId, space.id))
+        .limit(1);
 
+      if (existingTranscription) {
+        await db.update(transcriptions)
+          .set({
+            status: `processing:${progress}`,
+            content: completeText,
+            segments: JSON.stringify(allSegments),
+          })
+          .where(eq(transcriptions.id, existingTranscription.id));
+      }
+
+      // Send progress update to client
       if (i < chunks.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Only send intermediate updates
+        await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to prevent flooding
       }
     }
 
     // Final processing
     allSegments.sort((a, b) => a.start - b.start);
 
-    // Clean up overlapping segments
+    // Ensure no overlapping segments and clean up any small gaps
     for (let i = 1; i < allSegments.length; i++) {
       if (allSegments[i].start < allSegments[i - 1].end) {
         const midPoint = (allSegments[i - 1].end + allSegments[i].start) / 2;
@@ -164,77 +208,33 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Update final transcription
-    const [updatedTranscription] = await db.update(transcriptions)
-      .set({
-        status: 'completed',
-        content: completeText,
-        segments: JSON.stringify(allSegments),
-        updatedAt: new Date(),
-      })
-      .where(eq(transcriptions.id, newTranscription.id))
-      .returning();
+    // Update final status
+    const [finalTranscription] = await db.select()
+      .from(transcriptions)
+      .where(eq(transcriptions.spaceId, space.id))
+      .limit(1);
 
-    // If this is associated with a space, update the space
-    if (spaceId) {
-      await db.update(spaces)
+    if (finalTranscription) {
+      await db.update(transcriptions)
         .set({
-          status: 'transcribed',
-          updatedAt: new Date(),
+          status: 'completed',
+          content: completeText,
+          segments: JSON.stringify(allSegments),
         })
-        .where(eq(spaces.id, parseInt(spaceId)));
+        .where(eq(transcriptions.id, finalTranscription.id));
     }
 
     return NextResponse.json({
-      id: updatedTranscription.id,
       text: completeText,
       segments: allSegments,
       progress: 100,
-      status: 'completed'
     });
 
   } catch (error) {
     console.error('Transcription error:', error);
     return NextResponse.json(
-      { 
-        error: 'Failed to transcribe audio',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      }, 
+      { error: 'Failed to transcribe audio' },
       { status: 500 }
     );
   }
-}
-
-export async function GET(request: NextRequest) {
-  const user = await getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  try {
-    const userTranscriptions = await db
-      .select()
-      .from(transcriptions)
-      .where(eq(transcriptions.userId, user.id))
-      .orderBy(transcriptions.createdAt);
-
-    return NextResponse.json({ transcriptions: userTranscriptions });
-  } catch (error) {
-    console.error('Error fetching transcriptions:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch transcriptions' },
-      { status: 500 }
-    );
-  }
-}
-
-export async function OPTIONS(request: NextRequest) {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Allow-Origin': '*',
-    },
-  });
 }

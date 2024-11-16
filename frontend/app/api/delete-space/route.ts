@@ -3,10 +3,13 @@ import { db } from '@/lib/db/drizzle';
 import { spaces, users } from '@/lib/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { getUser } from '@/lib/db/queries';
+import { Storage } from '@google-cloud/storage';
 import path from 'path';
-import fs from 'fs/promises';
 
-const DOWNLOAD_DIR = path.join(process.cwd(), 'downloads');
+const storage = new Storage({
+  projectId: process.env.GCP_PROJECT_ID,
+  keyFilename: path.join(process.cwd(), process.env.GCP_KEY_FILENAME || ''),
+});
 
 export async function DELETE(request: NextRequest) {
   const user = await getUser();
@@ -39,18 +42,19 @@ export async function DELETE(request: NextRequest) {
 
     console.log(`Space found:`, space);
 
-    // Attempt to delete the file from local storage
-    if (space.fileName) {
-      const filePath = path.join(DOWNLOAD_DIR, space.fileName);
+    // Attempt to delete the file from Google Cloud Storage
+    if (space.downloadUrl) {
+      const fileName = space.downloadUrl.split('/').slice(-3).join('/');
+      const bucket = storage.bucket(process.env.GCP_BUCKET_NAME || '');
       try {
-        await fs.unlink(filePath);
-        console.log(`File ${space.fileName} deleted successfully from local storage.`);
+        await bucket.file(fileName).delete();
+        console.log(`File ${fileName} deleted successfully from GCS.`);
       } catch (error: any) {
-        if (error.code !== 'ENOENT') {
-          console.error(`Error deleting file from local storage:`, error);
-          throw error;
+        if (error.code === 404) {
+          console.log(`File ${fileName} not found in GCS. Proceeding with database deletion.`);
         } else {
-          console.log(`File ${space.fileName} not found in local storage. Proceeding with database deletion.`);
+          console.error(`Error deleting file from GCS:`, error);
+          throw error; // Re-throw if it's not a 404 error
         }
       }
     }

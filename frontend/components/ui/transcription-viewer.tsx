@@ -1,9 +1,12 @@
+// components/ui/transcription-viewer.tsx
+
 'use client';
 
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2 } from 'lucide-react';
+import { TranscriptPlayer } from '@/components/transcription-player';
 
 type TranscriptionViewerProps = {
   spaceId: number;
@@ -12,6 +15,7 @@ type TranscriptionViewerProps = {
 type Transcription = {
   id: number;
   content: string;
+  segments: string;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -19,20 +23,14 @@ type Transcription = {
 
 export function TranscriptionViewer({ spaceId }: TranscriptionViewerProps) {
   const [transcription, setTranscription] = useState<Transcription | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchTranscription();
-    // Poll for updates if transcription is in progress
-    const interval = setInterval(() => {
-      if (transcription?.status === 'in_progress') {
-        fetchTranscription();
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [spaceId, transcription?.status]);
+    fetchAudioUrl();
+  }, [spaceId]);
 
   const fetchTranscription = async () => {
     try {
@@ -47,6 +45,20 @@ export function TranscriptionViewer({ spaceId }: TranscriptionViewerProps) {
       console.error('Error fetching transcription:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchAudioUrl = async () => {
+    try {
+      const response = await fetch(`/api/get-signed-url?spaceId=${spaceId}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch audio URL');
+      }
+      const data = await response.json();
+      setAudioUrl(data.url);
+    } catch (error) {
+      console.error('Error fetching audio URL:', error);
+      setError('Failed to load audio');
     }
   };
 
@@ -74,11 +86,10 @@ export function TranscriptionViewer({ spaceId }: TranscriptionViewerProps) {
     );
   }
 
+  const segments = JSON.parse(transcription.segments);
+
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Transcription</CardTitle>
-      </CardHeader>
       <CardContent>
         {transcription.status === 'in_progress' && (
           <div className="mb-4 flex items-center text-purple-500">
@@ -86,9 +97,17 @@ export function TranscriptionViewer({ spaceId }: TranscriptionViewerProps) {
             <span>Transcription in progress...</span>
           </div>
         )}
-        <div className="whitespace-pre-wrap bg-gray-50 p-4 rounded-md">
-          {transcription.content}
-        </div>
+        {audioUrl && segments && (
+          <TranscriptPlayer
+            audioUrl={audioUrl}
+            segments={segments}
+          />
+        )}
+        {!segments && (
+          <div className="whitespace-pre-wrap bg-gray-50 p-4 rounded-md">
+            {transcription.content}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
